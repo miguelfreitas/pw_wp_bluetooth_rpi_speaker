@@ -5,11 +5,15 @@ import argparse
 import dbus
 import dbus.service
 import dbus.mainloop.glib
+import subprocess
+import json
+import os
 from gi.repository import GLib
 
 BUS_NAME = 'org.bluez'
 AGENT_INTERFACE = 'org.bluez.Agent1'
 AGENT_PATH = "/speaker/agent"
+CONFIG_FILE = os.path.expanduser("~/.config/speaker-agent.json")
 
 A2DP = '0000110d-0000-1000-8000-00805f9b34fb'
 AVRCP = '0000110e-0000-1000-8000-00805f9b34fb'
@@ -26,6 +30,8 @@ class Agent(dbus.service.Object):
     def __init__(self, bus, path, single_connection):
         self.exit_on_release = True
         self.remote_device = None
+        self.authorized = set()
+        self._load_authorized()
 
         dbus.service.Object.__init__(self, bus, path)
 
@@ -37,6 +43,26 @@ class Agent(dbus.service.Object):
                                     arg0='org.bluez.Device1',
                                     path_keyword='path'
                                     )
+
+    def _load_authorized(self):
+        if os.path.exists(CONFIG_FILE):
+            try:
+                with open(CONFIG_FILE, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                    # store as set of tuples
+                    self.authorized = set((d, u) for d, u in data)
+                print(f"[Agent] Loaded {len(self.authorized)} authorized entries.")
+            except Exception as e:
+                print(f"[Agent] Failed to load {CONFIG_FILE}: {e}")
+
+    def _save_authorized(self):
+        try:
+            os.makedirs(os.path.dirname(CONFIG_FILE), exist_ok=True)
+            with open(CONFIG_FILE, "w", encoding="utf-8") as f:
+                json.dump(list(self.authorized), f, indent=2)
+            print(f"[Agent] Saved {len(self.authorized)} authorized entries.")
+        except Exception as e:
+            print(f"[Agent] Failed to save {CONFIG_FILE}: {e}")
 
     def signal_handler(self, *args, **kwargs):
         path = kwargs['path']
@@ -75,7 +101,30 @@ class Agent(dbus.service.Object):
         # Always authorize A2DP and AVRCP connection
         if uuid in [A2DP, AVRCP]:
             print("AuthorizeService (%s, %s)" % (device, uuid))
-            return
+            #return
+            key = (str(device), str(uuid))
+            if key in self.authorized:
+                print(f"[AuthorizeService] Already authorized: {key}")
+                return
+            else:
+                try:
+                    # zenity exits 0 on OK, 1 on Cancel
+                    result = subprocess.run([
+                        "zenity", "--question",
+                        "--title=Bluetooth Authorization",
+                        f"--text=Authorize device {device}?"
+                    ])
+                    if result.returncode != 0:
+                        # user cancelled -> raise exception
+                        raise Rejected("Authorization rejected by UI")
+                except:
+                    raise Rejected("zenity error - No dialog tool available")
+
+                # User accepted - remember and save
+                self.authorized.add(key)
+                self._save_authorized()
+                print(f"[AuthorizeService] Authorized: {key}")
+                return
         else:
             print("Service rejected (%s, %s)" % (device, uuid))
         raise Rejected("Connection rejected by user")
