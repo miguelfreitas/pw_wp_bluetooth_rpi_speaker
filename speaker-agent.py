@@ -27,8 +27,9 @@ class Rejected(dbus.DBusException):
 
 class Agent(dbus.service.Object):
 
-    def __init__(self, bus, path, single_connection):
+    def __init__(self, bus, path, single_connection, authorization_dialog):
         self.exit_on_release = True
+        self.authorization_dialog = authorization_dialog
         self.remote_device = None
         self.authorized = set()
         self._load_authorized()
@@ -101,7 +102,8 @@ class Agent(dbus.service.Object):
         # Always authorize A2DP and AVRCP connection
         if uuid in [A2DP, AVRCP]:
             print("AuthorizeService (%s, %s)" % (device, uuid))
-            #return
+            if not self.authorization_dialog:
+                return
             key = (str(device), str(uuid))
             if key in self.authorized:
                 print(f"[AuthorizeService] Already authorized: {key}")
@@ -120,7 +122,7 @@ class Agent(dbus.service.Object):
                 except:
                     raise Rejected("zenity error - No dialog tool available")
 
-                # User accepted - remember and save
+                # User accepted → remember and save
                 self.authorized.add(key)
                 self._save_authorized()
                 print(f"[AuthorizeService] Authorized: {key}")
@@ -166,13 +168,14 @@ def nameownerchanged_handler(*args, **kwargs):
 if __name__ == '__main__':
     options = argparse.ArgumentParser(description="BlueZ Speaker Agent")
     options.add_argument("--single-connection", action='store_true', help="Allow only one connection at a time")
+    options.add_argument("--authorization-dialog", action='store_true', help="Open authorization dialog")
     args = options.parse_args()
 
     dbus.mainloop.glib.DBusGMainLoop(set_as_default=True)
 
     bus = dbus.SystemBus()
 
-    agent = Agent(bus, AGENT_PATH, args.single_connection)
+    agent = Agent(bus, AGENT_PATH, args.single_connection, args.authorization_dialog)
     agent.set_exit_on_release(False)
 
     bus.add_signal_receiver(nameownerchanged_handler,
